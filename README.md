@@ -1,57 +1,110 @@
-# workbuddy-idea-discovery
+# Idea Discovery
 
-> ARIS (Auto-Research-In-Sleep) idea-discovery pipeline 迁移至 WorkBuddy (Tencent)
+> WorkBuddy Skill — 科研思路全流程发现套件
 
-从 [wanshuiyin/Auto-claude-code-research-in-sleep](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) 迁移的科研 idea 发现流水线，适配 WorkBuddy 平台运行。
+一个命令完成从研究方向到实验方案的完整流水线：文献调研 → 思路生成 → 新颖性验证 → 模拟审稿 → 方案打磨 → 实验规划。
 
-## 一个命令，完整流水线
+基于 [ARIS (Auto-Research-In-Sleep)](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) 迁移适配，针对 WorkBuddy 平台重新设计为统一套件架构。
+
+## Quick Start
+
+**安装**
+
+将 `skills/idea-discovery/` 目录复制到 WorkBuddy 的 skill 目录下：
+
+```bash
+cp -r skills/idea-discovery ~/.workbuddy/skills/idea-discovery
+```
+
+**使用**
+
+在 WorkBuddy 中输入：
 
 ```
-/idea-discovery "B样条+INR 可解释诊断"
+/idea-discovery B样条+INR 可解释诊断
 ```
 
-6 个阶段自动串行执行：
+6 个阶段会自动串行执行，每阶段结束后有检查点供你确认和调整。
+
+## Pipeline
 
 ```
-文献调研 → 思路生成 → 新颖性验证 → 模拟审稿 → 方案打磨 → 实验规划
+Phase 1  文献调研        扫描本地论文 + arXiv/WebSearch 外部检索
+   ↓
+Phase 2  思路生成        8-12 个候选 → 快速筛选 → 深度验证 → 2-3 个
+   ↓
+Phase 3  新颖性验证      3-5 个核心主张 × 多源交叉搜索
+   ↓
+Phase 4  模拟审稿        NeurIPS/ICML 级别审稿模拟 + 迭代改进
+   ↓
+Phase 5  方案打磨        7 维度自审 + 审→改循环 (目标 ≥ 9/10)
+   ↓
+Phase 6  实验规划        实验故事线 + 规格化 + 里程碑 + 决策门
 ```
 
-## 统一套件结构
-
-**之前**：7 个独立 skill 散落在 50+ 个其他 skill 中，无人知道它们是一套的。
-
-**之后**：1 个统一 skill，内含 6 个 phase 子文件：
+## Project Structure
 
 ```
 skills/idea-discovery/
-├── SKILL.md                          # 唯一入口（流水线编排 + 全局常量 + 规则）
+├── SKILL.md                          # 入口：流水线编排、全局常量、输出协议
 └── phases/
-    ├── phase1-research-lit.md        # 文献检索与综述
+    ├── phase1-research-lit.md        # 文献检索与综述生成
     ├── phase2-idea-creator.md        # 研究思路生成与筛选
     ├── phase3-novelty-check.md       # 新颖性验证
     ├── phase4-research-review.md     # 模拟审稿
-    ├── phase5-research-refine.md     # 迭代打磨（review→refine 循环）
+    ├── phase5-research-refine.md     # 迭代打磨（含断点恢复）
     └── phase6-experiment-plan.md     # 实验方案规划
 ```
 
-## 端到端测试
+SKILL.md 是唯一的入口文件，负责阶段调度和全局配置。各阶段的详细 Workflow 指令在对应的 phase 文件中。
 
-2026-05-17 使用 **B样条+INR 可解释诊断** 方向完成全流程测试：
+## Configuration
 
-- 文献调研：10 篇论文，4 个结构缺口
-- 思路生成：10 → 6 → 3 (筛选后)
-- 新颖性验证：9/10
-- 模拟审稿：6/10 → 7.25/10 (改进后)
-- 迭代打磨：8.2/10 (Strong Accept)
-- 实验规划：4 个实验模块，14 个运行，20 天计划
+通过参数覆盖全局常量：
 
-详细结果见 `idea-stage/` 和 `refine-logs/` 目录。
+```
+/idea-discovery "研究方向" --compact: true --arxiv-download --ref-paper: https://arxiv.org/abs/XXXX
+```
 
-## 上游同步
+| 常量 | 默认值 | 说明 |
+|---|---|---|
+| `SEARCH_YEAR_RANGE` | 2023-2026 | 文献搜索年份范围 |
+| `AUTO_PROCEED` | true | 检查点超时后自动继续 |
+| `ARXIV_DOWNLOAD` | false | 是否下载 arXiv PDF |
+| `COMPACT` | false | 生成精简版候选报告 |
+| `PILOT_MAX_HOURS` | 2 | 单个 pilot 实验 GPU 时长上限 |
+| `MAX_ROUNDS` | 5 | Phase 5 打磨最大迭代轮数 |
 
-上游仓库：`wanshuiyin/Auto-claude-code-research-in-sleep`
+## Output Files
 
-- `scripts/sync-upstream.sh` — 手动同步脚本
-- `scripts/sync-upstream-check.py` — 自动同步脚本（WorkBuddy 定时任务每天 9:00 执行）
-- `.sync-state.json` — 记录上次同步的上游 commit
-- 有冲突时暂停通知用户，无冲突时自动合并并推送
+流水线运行后产出以下文件：
+
+| 文件 | 阶段 | 内容 |
+|---|---|---|
+| `idea-stage/LITERATURE_SURVEY.md` | Phase 1 | 文献综述（全景图 + 结构缺口） |
+| `idea-stage/IDEA_REPORT.md` | Phase 2 | 候选思路报告（含排序与筛选记录） |
+| `idea-stage/NOVELTY_CHECK_*.md` | Phase 3 | 新颖性验证报告 |
+| `idea-stage/REVIEW_*.md` | Phase 4 | 模拟审稿意见 + 评分 |
+| `refine-logs/FINAL_PROPOSAL.md` | Phase 5 | 最终研究方案 |
+| `refine-logs/EXPERIMENT_PLAN.md` | Phase 6 | 实验计划 |
+| `refine-logs/EXPERIMENT_TRACKER.md` | Phase 6 | 实验进度追踪表 |
+
+Phase 5 支持断点恢复——通过 `refine-logs/REFINE_STATE.json` 保存打磨状态，中断后可从上次的断点继续。
+
+## Upstream Sync
+
+本项目从 [ARIS](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) 迁移，保留了上游同步能力：
+
+- `scripts/sync-upstream.sh` — 手动同步（带冲突检测）
+- `scripts/sync-upstream-check.py` — 自动同步（可接入 WorkBuddy 定时任务）
+
+同步策略：无冲突时自动合并，有冲突时暂停并报告。
+
+## Credits
+
+- [ARIS (Auto-Research-In-Sleep)](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) — 原始项目
+- [WorkBuddy](https://www.codebuddy.cn) — 运行平台
+
+## License
+
+本项目遵循上游 ARIS 项目的许可协议。

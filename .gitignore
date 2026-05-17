@@ -22,3 +22,13 @@ Desktop.ini
 # Temp files
 *.tmp
 *.log
+
+# Skill runtime outputs (research results, refinement logs)
+idea-stage/
+refine-logs/
+
+# Internal docs
+docs/
+
+# Sync state (runtime)
+.sync-state.json
