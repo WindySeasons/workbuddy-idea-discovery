@@ -23,16 +23,18 @@ LOCAL_SKILLS = os.path.join(REPO_DIR, "skills")
 ARIS_CLONE = os.path.join(REPO_DIR, ".aris-upstream-check")
 UPSTREAM_REPO = "wanshuiyin/Auto-claude-code-research-in-sleep"
 
-# Map ARIS skill dir names to our local dir names
-SKILL_MAP = {
-    "research-lit": "research-lit",
-    "idea-creator": "idea-creator",
-    "idea-discovery": "idea-discovery",
-    "novelty-check": "novelty-check",
-    "research-review": "research-review",
-    "research-refine": "research-refine",
-    "experiment-plan": "experiment-plan",
+# Map ARIS skill dirs to our unified structure:
+# All 7 ARIS skills map to phases inside skills/idea-discovery/phases/
+ARIS_TO_PHASE = {
+    "research-lit": "phases/phase1-research-lit.md",
+    "idea-creator": "phases/phase2-idea-creator.md",
+    "idea-discovery": "SKILL.md",  # orchestrator
+    "novelty-check": "phases/phase3-novelty-check.md",
+    "research-review": "phases/phase4-research-review.md",
+    "research-refine": "phases/phase5-research-refine.md",
+    "experiment-plan": "phases/phase6-experiment-plan.md",
 }
+LOCAL_SUITE = os.path.join(LOCAL_SKILLS, "idea-discovery")
 
 def run(cmd, cwd=None):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd)
@@ -72,20 +74,18 @@ def diff_skills():
     changes = []
     conflicts = []
 
-    for aris_dir, local_dir in SKILL_MAP.items():
+    for aris_dir, local_phase in ARIS_TO_PHASE.items():
         aris_skill = os.path.join(ARIS_CLONE, aris_dir)
-        local_skill = os.path.join(LOCAL_SKILLS, local_dir)
+        local_md = os.path.join(LOCAL_SUITE, local_phase)
 
         if not os.path.isdir(aris_skill):
             continue
-        if not os.path.isdir(local_skill):
+        if not os.path.exists(local_md):
             continue
 
-        # Find SKILL.md in both
+        # Find SKILL.md in upstream
         aris_md = os.path.join(aris_skill, "SKILL.md")
-        local_md = os.path.join(local_skill, "SKILL.md")
-
-        if not os.path.exists(aris_md) or not os.path.exists(local_md):
+        if not os.path.exists(aris_md):
             continue
 
         with open(aris_md, "r", encoding="utf-8") as f:
@@ -100,28 +100,31 @@ def diff_skills():
         wb_markers = ["WorkBuddy", "workbuddy", "Tencent", "mcp__", "allowed-tools"]
         has_wb = any(m in aris_content for m in wb_markers)
 
-        changes.append(local_dir)
+        changes.append(local_phase)
         if has_wb:
-            conflicts.append(local_dir)
+            conflicts.append(local_phase)
 
     return changes, conflicts
 
 def auto_merge(changes, conflicts):
     """Merge non-conflicting changes"""
     merged = []
-    for skill_dir in changes:
-        if skill_dir in conflicts:
+    for phase_path in changes:
+        if phase_path in conflicts:
             continue
 
         # Find corresponding ARIS dir
-        aris_dir = skill_dir
-        for ad, ld in SKILL_MAP.items():
-            if ld == skill_dir:
+        aris_dir = None
+        for ad, lp in ARIS_TO_PHASE.items():
+            if lp == phase_path:
                 aris_dir = ad
                 break
 
+        if not aris_dir:
+            continue
+
         aris_md = os.path.join(ARIS_CLONE, aris_dir, "SKILL.md")
-        local_md = os.path.join(LOCAL_SKILLS, skill_dir, "SKILL.md")
+        local_md = os.path.join(LOCAL_SUITE, phase_path)
 
         if not os.path.exists(aris_md):
             continue
@@ -129,7 +132,7 @@ def auto_merge(changes, conflicts):
         # Backup
         shutil.copy2(local_md, local_md + ".bak")
         shutil.copy2(aris_md, local_md)
-        merged.append(skill_dir)
+        merged.append(phase_path)
 
     return merged
 
