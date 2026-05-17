@@ -4,23 +4,34 @@
 
 从 [wanshuiyin/Auto-claude-code-research-in-sleep](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep) 迁移的科研 idea 发现流水线，适配 WorkBuddy 平台运行。
 
-## 迁移的 Skills
-
-| Phase | Skill | 说明 |
-|-------|-------|------|
-| Phase 1 | `research-lit` | 文献检索与综述 |
-| Phase 1 | `idea-creator` | 研究思路生成与排序 |
-| Phase 1 | `idea-discovery` | 完整 Phase 1 编排（research-lit → idea-creator） |
-| Phase 2 | `novelty-check` | 新颖性验证 |
-| Phase 2 | `research-review` | 模拟审稿 |
-| Phase 2 | `research-refine` | 迭代打磨（review → refine 循环） |
-| Phase 2 | `experiment-plan` | 实验方案规划 |
-| Shared | `shared-references` | 共享引用规范（版本号/目录/语言） |
-
-## 完整流水线
+## 一个命令，完整流水线
 
 ```
-research-lit → idea-creator → novelty-check → research-review → research-refine → experiment-plan
+/idea-discovery "B样条+INR 可解释诊断"
+```
+
+6 个阶段自动串行执行：
+
+```
+文献调研 → 思路生成 → 新颖性验证 → 模拟审稿 → 方案打磨 → 实验规划
+```
+
+## 统一套件结构
+
+**之前**：7 个独立 skill 散落在 50+ 个其他 skill 中，无人知道它们是一套的。
+
+**之后**：1 个统一 skill，内含 6 个 phase 子文件：
+
+```
+skills/idea-discovery/
+├── SKILL.md                          # 唯一入口（流水线编排 + 全局常量 + 规则）
+└── phases/
+    ├── phase1-research-lit.md        # 文献检索与综述
+    ├── phase2-idea-creator.md        # 研究思路生成与筛选
+    ├── phase3-novelty-check.md       # 新颖性验证
+    ├── phase4-research-review.md     # 模拟审稿
+    ├── phase5-research-refine.md     # 迭代打磨（review→refine 循环）
+    └── phase6-experiment-plan.md     # 实验方案规划
 ```
 
 ## 端到端测试
@@ -40,4 +51,7 @@ research-lit → idea-creator → novelty-check → research-review → research
 
 上游仓库：`wanshuiyin/Auto-claude-code-research-in-sleep`
 
-通过 `scripts/sync-upstream.sh` 定期检查上游更新并自动合并到本地 skills。
+- `scripts/sync-upstream.sh` — 手动同步脚本
+- `scripts/sync-upstream-check.py` — 自动同步脚本（WorkBuddy 定时任务每天 9:00 执行）
+- `.sync-state.json` — 记录上次同步的上游 commit
+- 有冲突时暂停通知用户，无冲突时自动合并并推送
