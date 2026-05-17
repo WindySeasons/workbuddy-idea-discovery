@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# WorkBuddy local config (contains memory, session data)
+.workbuddy/
+
+# CodeBuddy local config
+.codebuddy/
+
+# Upstream ARIS source (reference only, too large to track)
+aris-temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.log
