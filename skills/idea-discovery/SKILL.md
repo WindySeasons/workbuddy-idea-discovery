@@ -1,338 +1,189 @@
 ---
 name: idea-discovery
-description: "Workflow 1: Full idea discovery pipeline. Orchestrates research-lit → idea-creator → novelty-check → research-review to go from a broad research direction to validated, pilot-tested ideas. Use when user says '找idea全流程', 'idea discovery pipeline', '从零开始找方向', or wants the complete idea exploration workflow."
-argument-hint: [research-direction]
+description: "科研 idea 全流程发现套件。从研究方向出发，自动完成文献调研→思路生成→新颖性验证→模拟审稿→方案打磨→实验规划。触发词：找idea、idea discovery、科研方向探索、文献调研、brainstorm research ideas、找idea全流程。输入一个研究方向，输出完整的研究方案+实验计划。"
+argument-hint: [研究方向]
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, TaskCreate, TaskUpdate, Skill
+version: "2.0.0"
 ---
 
-# Workflow 1: Idea Discovery Pipeline (WorkBuddy Port)
+# Idea Discovery Pipeline（科研思路发现流水线）
 
-Orchestrate a complete idea discovery workflow for: **$ARGUMENTS**
+研究方向：**$ARGUMENTS**
 
-## Overview
+## 概览
 
-This skill chains sub-skills into a single automated pipeline:
+这是一个**一体化的科研思路发现套件**，将 6 个阶段整合在一个 skill 中，一键运行完整流水线：
 
 ```
-research-lit → idea-creator → novelty-check → research-review → research-refine-pipeline
- (survey)      (brainstorm)    (verify novel)    (critical feedback)  (refine method + plan experiments)
+Phase 1: 文献调研 (research-lit)
+    ↓
+Phase 2: 思路生成 (idea-creator)
+    ↓
+Phase 3: 新颖性验证 (novelty-check)
+    ↓
+Phase 4: 模拟审稿 (research-review)
+    ↓
+Phase 5: 方案打磨 (research-refine)
+    ↓
+Phase 6: 实验规划 (experiment-plan)
 ```
 
-Each phase builds on the previous one's output. The final deliverables are a validated `idea-stage/IDEA_REPORT.md` with ranked ideas, plus a refined proposal (`refine-logs/FINAL_PROPOSAL.md`) and experiment plan (`refine-logs/EXPERIMENT_PLAN.md`) for the top idea.
+每个阶段的详细指令在 `phases/` 子目录中，本文件为编排层。
 
-## Constants
+## 全局常量
 
-- **PILOT_MAX_HOURS = 2** — Skip any pilot experiment estimated to take > 2 hours per GPU. Flag as "needs manual pilot" in the report.
-- **PILOT_TIMEOUT_HOURS = 3** — Hard timeout: kill any running pilot that exceeds 3 hours. Collect partial results if available.
-- **MAX_PILOT_IDEAS = 3** — Run pilots for at most 3 top ideas. Additional ideas are validated on paper only.
-- **MAX_TOTAL_GPU_HOURS = 8** — Total GPU budget across all pilots. If exceeded, skip remaining pilots and note in report.
-- **AUTO_PROCEED = true** — If user doesn't respond at a checkpoint, automatically proceed with the best option after presenting results. Set to `false` to always wait for explicit user confirmation.
-- **REVIEWER_MODEL = built-in** — Model used for review. WorkBuddy uses the configured model (built-in or DeepSeek V4). No external API needed.
-- **OUTPUT_DIR = `idea-stage/`** — All idea-stage outputs go here. Create the directory if it doesn't exist.
-- **ARXIV_DOWNLOAD = false** — When `true`, download the top relevant arXiv PDFs during Phase 1. When `false` (default), only fetches metadata.
-- **COMPACT = false** — When `true`, generate compact summary files for short-context models. Writes `idea-stage/IDEA_CANDIDATES.md` (top 3-5 ideas only) at the end.
-- **REF_PAPER = false** — Reference paper to base ideas on. Accepts: local PDF path, arXiv URL, or any paper URL.
+- **PILOT_MAX_HOURS = 2** — 单个 pilot 实验最大 GPU 时长
+- **PILOT_TIMEOUT_HOURS = 3** — 硬超时
+- **MAX_PILOT_IDEAS = 3** — 最多 pilot 测试的 idea 数
+- **MAX_TOTAL_GPU_HOURS = 8** — 全部 pilot 总 GPU 预算
+- **AUTO_PROCEED = true** — 用户未响应时自动继续
+- **OUTPUT_DIR = `idea-stage/`** — Phase 1-4 输出目录
+- **REFINE_DIR = `refine-logs/`** — Phase 5-6 输出目录
+- **ARXIV_DOWNLOAD = false** — 是否下载 arXiv PDF
+- **COMPACT = false** — 生成精简版候选报告
+- **REF_PAPER = false** — 参考论文（PDF路径/arXiv URL）
+- **REVIEWER_MODEL = built-in** — 使用 WorkBuddy 配置的模型
+- **SEARCH_YEAR_RANGE = 2023-2026** — 文献搜索年份范围
 
-> 💡 These are defaults. Override by telling the skill, e.g., `/idea-discovery "topic" --ref-paper: https://arxiv.org/abs/2406.04329` or `/idea-discovery "topic" --compact: true`.
-
----
-
-## Pipeline
-
-### Phase 0: Load Research Brief (if available)
-
-Before starting any other phase, check for a detailed research brief in the project:
-
-1. Look for `RESEARCH_BRIEF.md` in the project root (or path passed as `$ARGUMENTS`)
-2. If found, read it and extract:
-   - Problem statement and context
-   - Constraints (compute, data, timeline, venue)
-   - What the user already tried / what didn't work
-   - Domain knowledge and non-goals
-   - Existing results (if any)
-3. Use this as the primary context for all subsequent phases
-4. If both `RESEARCH_BRIEF.md` and a one-line `$ARGUMENTS` exist, merge them (brief takes priority for details, argument sets the direction)
-
-If no brief exists, proceed normally with `$ARGUMENTS` as the research direction.
-
-> 💡 Create a brief from the template: `cp templates/RESEARCH_BRIEF_TEMPLATE.md RESEARCH_BRIEF.md`
+> 覆盖常量：`/idea-discovery "方向" --compact: true --arxiv-download --ref-paper: https://arxiv.org/abs/XXXX`
 
 ---
 
-### Phase 0.5: Reference Paper Summary (when REF_PAPER is set)
+## 流水线
 
-**Skip entirely if `REF_PAPER` is `false`.**
+### Phase 0: 加载研究简报（可选）
 
-Summarize the reference paper before searching the literature:
-
-1. **If arXiv URL** (e.g., `https://arxiv.org/abs/2406.04329`):
-   - Use WebFetch to fetch the arXiv abstract page
-   - Extract title, abstract, introduction overview
-
-2. **If local PDF path** (e.g., `papers/reference.pdf`):
-   - Read the PDF directly (first 5 pages)
-   - Extract title, abstract, key method, limitations
-
-3. **If other URL**:
-   - Fetch and extract content via WebFetch
-
-4. **Generate `idea-stage/REF_PAPER_SUMMARY.md`**:
-
-```markdown
-# Reference Paper Summary
-
-**Title**: [paper title]
-**Authors**: [authors]
-**Venue**: [venue, year]
-
-## What They Did
-[2-3 sentences: core method and contribution]
-
-## Key Results
-[Main quantitative findings]
-
-## Limitations & Open Questions
-[What the paper didn't solve, acknowledged weaknesses, future work suggestions]
-
-## Potential Improvement Directions
-[Based on the limitations, what could be improved or extended?]
-
-## Codebase
-[If `base repo` is also set: link to the repo and note which parts correspond to the paper]
-```
-
-**Checkpoint:** Present the summary to the user using AskUserQuestion:
-
-```
-📄 Reference paper summarized:
-- Title: [title]
-- Key limitation: [main gap]
-- Improvement directions: [2-3 bullets]
-
-Proceeding to literature survey with this as context.
-```
-
-Use AskUserQuestion with options: ["Proceed", "Adjust summary", "Skip this paper"]
+1. 检查 `RESEARCH_BRIEF.md`，提取问题、约束、已有结果
+2. 如有参考论文（REF_PAPER），摘要写入 `idea-stage/REF_PAPER_SUMMARY.md`
+3. 展示简报摘要，用 AskUserQuestion 确认
 
 ---
 
-### Phase 1: Literature Survey
+### Phase 1: 文献调研
 
-Use the `Skill` tool to invoke `research-lit` with the research direction as argument.
+**读取详细指令**：用 Read 工具读取 `phases/phase1-research-lit.md`，按其中的 Workflow 执行。
 
-**What this does:**
-- Search arXiv, Semantic Scholar, and web sources for recent papers
-- Build a landscape map: sub-directions, approaches, open problems
-- Identify structural gaps and recurring limitations
-- Output a literature summary (saved to working notes)
+核心流程：
+1. 扫描本地论文库（papers/、literature/）
+2. arXiv + WebSearch 外部检索
+3. 逐篇分析（问题/方法/结果/关联度）
+4. 综合分析：按主题分组 → 识别结构缺口 → 构建全景图
+5. 输出 `idea-stage/LITERATURE_SURVEY.md`
 
-**Checkpoint:** Use AskUserQuestion to present the landscape summary to the user. Ask:
-
-```
-📚 Literature survey complete. Here's what I found:
-- [key findings, gaps, open problems]
-
-Does this match your understanding? Should I adjust the scope before generating ideas?
-(If no response, I'll proceed with the top-ranked direction.)
-```
-
-- **User approves** (or no response + AUTO_PROCEED=true) → proceed to Phase 2 with best direction.
-- **User requests changes** (e.g., "focus more on X", "ignore Y", "too broad") → refine the search with updated queries, re-invoke `research-lit` with adjusted scope, and present again. Repeat until the user is satisfied.
+**检查点**：用 AskUserQuestion 展示文献全景，用户确认后继续。
 
 ---
 
-### Phase 2: Idea Generation + Filtering + Pilots
+### Phase 2: 思路生成与筛选
 
-Use the `Skill` tool to invoke `idea-creator` with the landscape context (and `idea-stage/REF_PAPER_SUMMARY.md` if available).
+**读取详细指令**：用 Read 工具读取 `phases/phase2-idea-creator.md`，按其中的 Workflow 执行。
 
-**What this does:**
-- If `idea-stage/REF_PAPER_SUMMARY.md` exists, include it as context — ideas should build on, improve, or extend the reference paper
-- Brainstorm 8-12 concrete research ideas using the WorkBuddy configured model
-- Filter by feasibility, compute cost, quick novelty search
-- Deep validate top ideas (full novelty check + devil's advocate)
-- Rank by promise (novelty × feasibility × impact)
-- Output `idea-stage/IDEA_REPORT.md`
+核心流程：
+1. 加载 `idea-stage/LITERATURE_SURVEY.md` 作为上下文
+2. 生成 8-12 个具体研究思路（含假设/最小实验/贡献类型/风险）
+3. 快速筛选：可行性 + 快速新颖性检查 + 影响评估 → 8-12 缩减到 4-6
+4. 深度验证：完整新颖性验证 + 模型魔鬼代言人 → 选出 2-3 个
+5. Pilot 实验（可选，有 GPU 时）
+6. 输出 `idea-stage/IDEA_REPORT.md`
 
-**Checkpoint:** Use AskUserQuestion to present `idea-stage/IDEA_REPORT.md` ranked ideas to the user. Ask:
-
-```
-💡 Generated X ideas, filtered to Y, ranked Z. Top results:
-
-1. [Idea 1] — Novelty: HIGH, Feasibility: MEDIUM
-2. [Idea 2] — Novelty: MEDIUM, Feasibility: HIGH
-3. [Idea 3] — Novelty: LOW (eliminated)
-
-Which ideas should I validate further? Or should I regenerate with different constraints?
-(If no response, I'll proceed with the top-ranked ideas.)
-```
-
-- **User picks ideas** (or no response + AUTO_PROCEED=true) → proceed to Phase 3 with top-ranked ideas.
-- **User unhappy with all ideas** → collect feedback ("what's missing?", "what direction do you prefer?"), update the prompt with user's constraints, and re-invoke `idea-creator`. Repeat until the user selects at least 1 idea.
-- **User wants to adjust scope** → go back to Phase 1 with refined direction.
+**检查点**：用 AskUserQuestion 展示排序后的 ideas，用户选择后继续。
 
 ---
 
-### Phase 3: Deep Novelty Verification
+### Phase 3: 新颖性验证
 
-For each top idea (surviving Phase 2), run a thorough novelty check.
+**读取详细指令**：用 Read 工具读取 `phases/phase3-novelty-check.md`，按其中的 Instructions 执行。
 
-Use the `Skill` tool to invoke `novelty-check` with the idea description as argument.
+核心流程：
+1. 提取 3-5 个核心技术主张
+2. 每个主张：≥3 种查询 × 4 种数据源（WebSearch/arXiv/Semantic Scholar/WebFetch）
+3. 深度新颖性分析：直接命中/近似/隐含存在/并发风险
+4. 输出 `idea-stage/NOVELTY_CHECK_[idea_name].md`
+5. 淘汰已发表的想法
 
-**What this does:**
-- Multi-source literature search (arXiv, Semantic Scholar, WebSearch)
-- Cross-verify with the configured model
-- Check for concurrent work (last 3-6 months)
-- Identify closest existing work and differentiation points
-
-**Update `idea-stage/IDEA_REPORT.md`** with deep novelty results. Eliminate any idea that turns out to be already published.
-
----
-
-### Phase 4: External Critical Review
-
-For the surviving top idea(s), get structured feedback.
-
-Use the `Skill` tool to invoke `research-review` with the idea description + pilot results as argument.
-
-**What this does:**
-- The configured model acts as a senior reviewer (NeurIPS/ICML level)
-- Scores the idea, identifies weaknesses, suggests minimum viable improvements
-- Provides concrete feedback on experimental design
-
-**Update `idea-stage/IDEA_REPORT.md`** with reviewer feedback and revised plan.
+**反幻觉规则**：所有引用的论文必须通过 WebSearch/WebFetch 验证。未验证的标记 `[UNVERIFIED]`。
 
 ---
 
-### Phase 4.5: Method Refinement + Experiment Planning
+### Phase 4: 模拟审稿
 
-After review, refine the top idea into a concrete proposal and plan experiments.
+**读取详细指令**：用 Read 工具读取 `phases/phase4-research-review.md`，按其中的 Workflow 执行。
 
-Use the `Skill` tool to invoke `research-refine-pipeline` with the idea description + pilot results + reviewer feedback as argument.
-
-**What this does:**
-- Freeze a **Problem Anchor** to prevent scope drift
-- Iteratively refine the method via model review (up to 5 rounds, until score ≥ 9)
-- Generate a claim-driven experiment roadmap with ablations, budgets, and run order
-- Output: `refine-logs/FINAL_PROPOSAL.md`, `refine-logs/EXPERIMENT_PLAN.md`, `refine-logs/EXPERIMENT_TRACKER.md`
-
-**Checkpoint:** Use AskUserQuestion to present the refined proposal summary. Ask:
-
-```
-🔬 Method refined and experiment plan ready:
-- Problem anchor: [anchored problem]
-- Method thesis: [one sentence]
-- Dominant contribution: [what's new]
-- Must-run experiments: [N blocks]
-- First 3 runs to launch: [list]
-
-Proceed to final report? Or adjust the proposal?
-```
-
-- **User approves** (or AUTO_PROCEED=true) → proceed to Final Report.
-- **User requests changes** → pass feedback to `research-refine` for another round.
-- **Lite mode:** If reviewer score < 6 or pilot was weak, run `research-refine` only (skip `experiment-plan`) and note remaining risks in the report.
+核心流程：
+1. 汇总研究上下文（IDEA_REPORT + NOVELTY_CHECK + LITERATURE_SURVEY）
+2. 模型扮演高级审稿人（NeurIPS/ICML 级别）
+3. 评分：新颖性/重要性/可靠性/清晰度 → 总分 + 建议
+4. 迭代改进（最多 3 轮）
+5. 输出 `idea-stage/REVIEW_[idea_name].md`
 
 ---
 
-### Phase 5: Final Report
+### Phase 5: 方案打磨
 
-Finalize `idea-stage/IDEA_REPORT.md` with all accumulated information:
+**读取详细指令**：用 Read 工具读取 `phases/phase5-research-refine.md`，按其中的 Workflow 执行。
 
-```markdown
-# Idea Discovery Report
+核心流程：
+1. 冻结问题锚点（Problem Anchor）
+2. 扫描基础文献 → 识别技术缺口 → 选择最优路线
+3. 自审（7 维度评分：问题忠实度/方法具体性/贡献质量/前沿利用/可行性/验证聚焦/会议准备度）
+4. 迭代打磨（审→改循环，直到总分 ≥ 9 或达 MAX_ROUNDS=5）
+5. 输出 `refine-logs/FINAL_PROPOSAL.md` + 各轮记录
 
-**Direction**: $ARGUMENTS
-**Date**: [today]
-**Pipeline**: research-lit → idea-creator → novelty-check → research-review → research-refine-pipeline
+**状态持久化**：`refine-logs/REFINE_STATE.json` 支持断点恢复。
 
-## Executive Summary
-[2-3 sentences: best idea, key evidence, recommended next step]
-
-## Literature Landscape
-[from Phase 1]
-
-## Ranked Ideas
-[from Phase 2, updated with Phase 3-4 results]
-
-### 🏆 Idea 1: [title] — RECOMMENDED
-- Novelty: CONFIRMED (closest: [paper], differentiation: [what's different])
-- Reviewer score: X/10
-- Next step: implement full experiment → /auto-review-loop
-
-### Idea 2: [title] — BACKUP
-...
-
-## Eliminated Ideas
-[ideas killed at each phase, with reasons]
-
-## Refined Proposal
-- Proposal: `refine-logs/FINAL_PROPOSAL.md`
-- Experiment plan: `refine-logs/EXPERIMENT_PLAN.md`
-- Tracker: `refine-logs/EXPERIMENT_TRACKER.md`
-
-## Next Steps
-- [ ] Implement experiments from the plan
-- [ ] Run /auto-review-loop to iterate until submission-ready
-- [ ] Or invoke /research-pipeline for the complete end-to-end flow
-```
+**检查点**：用 AskUserQuestion 展示打磨后方案摘要。
 
 ---
 
-### Phase 5.5: Write Compact Files (when COMPACT = true)
+### Phase 6: 实验规划
 
-**Skip entirely if `COMPACT` is `false`.**
+**读取详细指令**：用 Read 工具读取 `phases/phase6-experiment-plan.md`，按其中的 Workflow 执行。
 
-Write `idea-stage/IDEA_CANDIDATES.md` — a lean summary of the top 3-5 surviving ideas:
-
-```markdown
-# Idea Candidates
-
-| # | Idea | Novelty | Feasibility | Reviewer Score | Status |
-|---|------|--------|-------------|---------------|--------|
-| 1 | [title] | Confirmed | High | X/10 | RECOMMENDED |
-| 2 | [title] | Confirmed | Medium | X/10 | BACKUP |
-| 3 | [title] | Negative | — | — | ELIMINATED |
-
-## Active Idea: #1 — [title]
-- Hypothesis: [one sentence]
-- Key evidence: [pilot result]
-- Next step: implement experiments or continue refining
-```
-
-This file is intentionally small (~30 lines) so downstream skills and session recovery can read it without loading the full `IDEA_REPORT.md`.
+核心流程：
+1. 加载 FINAL_PROPOSAL + 审稿反馈
+2. 冻结论文主张（1 主 + 1 辅）
+3. 设计实验故事线（5 个默认 block，按需裁剪）
+4. 每个实验 block 完整规格化（数据集/基线/指标/成功标准/失败解读）
+5. 生成执行顺序 + 里程碑 + 决策门
+6. 输出 `refine-logs/EXPERIMENT_PLAN.md` + `refine-logs/EXPERIMENT_TRACKER.md`
 
 ---
 
-## Output Protocols
+### Phase 7: 最终报告
 
-> Follow these shared protocols for all output files:
-> - **[Output Versioning Protocol](../shared-references/output-versioning.md)** — write timestamped file first, then copy to fixed name
-> - **[Output Manifest Protocol](../shared-references/output-manifest.md)** — log every output to MANIFEST.md
-> - **[Output Language Protocol](../shared-references/output-language.md)** — respect the project's language setting
+汇总所有阶段信息，写入 `idea-stage/IDEA_REPORT.md`（完整版）+ 可选 `idea-stage/IDEA_CANDIDATES.md`（精简版，~30 行）。
 
 ---
 
-## Key Rules
+## 输出协议
 
-- **Large file handling**: If the Write tool fails due to file size, immediately use Bash (`cat << 'EOF' > file`) to write in chunks. Do NOT ask the user for permission — just do it silently.
-- **Don't skip phases.** Each phase filters and validates — skipping leads to wasted effort later.
-- **Checkpoint between phases.** Briefly summarize what was found before moving on. Use AskUserQuestion for all user interactions.
-- **Kill ideas early.** It's better to kill 10 bad ideas in Phase 3 than to implement one and fail.
-- **Empirical signal > theoretical appeal.** An idea with a positive pilot outranks a "sounds great" idea without evidence.
-- **Document everything.** Dead ends are just as valuable as successes for future reference.
-- **Be honest with the reviewer.** Include negative results and failed pilots in the review prompt.
-- **Notifications**: If the user has configured WeChat/Feishu notifications, send progress updates at each phase transition.
+### 版本化协议
+
+写入覆盖文件时，先写时间戳版本 `{NAME}_{YYYYMMDD_HHmmss}.md`，再复制到固定名 `{NAME}.md`。下游始终读固定名。
+
+### 语言协议
+
+- 用户最近消息为中文 → 中文输出
+- 默认英文
+- 不本地化：代码/文件路径/论文标题/JSON 键名/技术术语
 
 ---
 
-## Composing with Workflow 2
+## 关键规则
 
-After this pipeline produces a validated top idea:
+- **不要跳过阶段** — 每个阶段都有过滤/验证，跳过会浪费后续精力
+- **阶段之间要有检查点** — 简要汇报结果，用 AskUserQuestion 与用户交互
+- **尽早淘汰坏想法** — 在 Phase 3 淘汰 10 个坏想法比实现 1 个失败强
+- **实证信号 > 理论吸引力** — 有正面 pilot 的 idea 优先于"听起来很好"的
+- **诚实面对审稿** — 包含负面结果和失败 pilot
+- **大文件处理**：Write 失败时立即用 Bash `cat << 'EOF' > file` 分块写入，不要问用户
+- **不要编造结果** — 只描述预期证据和计划的实验
+- **记录一切** — 死胡同和成功一样有价值
 
-```
-/idea-discovery "direction"         ← you are here (Workflow 1, includes method refinement + experiment planning)
-→ implement experiments from the plan
-/auto-review-loop "top idea"        ← Workflow 2: iterate until submission-ready
+---
 
-Or use /research-pipeline for the full end-to-end flow.
-```
+## 恢复与继续
+
+- `refine-logs/REFINE_STATE.json` 记录 Phase 5 打磨状态，支持断点恢复
+- 各阶段输出文件固定命名，下一阶段直接读取
+- 时间戳文件保留完整历史
